@@ -5,6 +5,9 @@ from datetime import datetime
 import re
 import time
 
+
+
+
 compensation_keywords = [
     'director compensation',           
     'compensation of directors',
@@ -14,47 +17,46 @@ compensation_keywords = [
     'compensation for directors',
     "directors' compensation",
     "director's compensation",
-    "directors' compensation",
-    "director's compensation",
-    "directors&#8217; compensation",
-    "director&#8217;s compensation",
-    "directors&rsquo; compensation",
-    "director&rsquo;s compensation",
 ]
 
+
+
+
 csv_data = []
+
+
+
 
 headers = {
     'User-Agent': 'Your Name your-email@example.com'
 }
 
+
+
+
 def clean_text(text):
+    """Clean text by removing extra whitespace and newlines"""
     if not text:
         return ""
     cleaned = re.sub(r'[\n\r\t]+', ' ', text)
     cleaned = re.sub(r'\s+', ' ', cleaned)
     return cleaned.strip()
 
+
+
+
 def has_name_column(table):
+    """Check if table has a 'name' column and return its index"""
     rows = table.find_all('tr')
     if not rows:
         return None
     
-    print(f"      Checking table with {len(rows)} rows for name column...")
-    
+    # Check first few rows for headers
     for row_idx, row in enumerate(rows[:5]):
         cells = row.find_all(['th', 'td'], recursive=False)
         
         if len(cells) < 2:
             continue
-        
-        name_col_idx = None
-        
-        cell_preview = []
-        for idx, cell in enumerate(cells):
-            cell_text = clean_text(cell.get_text()).lower()
-            cell_preview.append(f"{idx}:{cell_text[:15] if cell_text else '[empty]'}")
-        print(f"        Row {row_idx}: {' | '.join(cell_preview[:8])}")
         
         for idx, cell in enumerate(cells):
             cell_text = clean_text(cell.get_text()).lower()
@@ -62,62 +64,93 @@ def has_name_column(table):
             if not cell_text:
                 continue
             
-            if 'name' in cell_text and name_col_idx is None:
+            # Check for name column - accept if 'name' appears anywhere
+            if 'name' in cell_text:
+                # Skip if it's about plans, awards, or other non-person names
                 if any(exclude in cell_text for exclude in ['plan name', 'award name', 'grant name', 'program name']):
-                    print(f"          Found 'name' at column {idx} but excluded: '{cell_text}'")
                     continue
                 
-                name_col_idx = idx
-                print(f"          Found 'name' at column {idx}: '{cell_text}'")
-                print(f"        ✓ Row {row_idx} has name column at index {name_col_idx}")
-                return name_col_idx
+                return idx
     
-    print(f"        ✗ No row found with name column")
     return None
 
-def find_compensation_table(soup, filing_date):
-    all_elements = soup.find_all()
+
+
+
+def get_text_around_table(table, elements_before=50, elements_after=20):
+    """Get text from elements before and after a table"""
+    text_before = []
+    text_after = []
     
-    print(f"  Searching through {len(all_elements)} total elements...")
+    # Get text before table
+    current = table
+    for _ in range(elements_before):
+        current = current.find_previous()
+        if current is None:
+            break
+        if hasattr(current, 'get_text'):
+            text = clean_text(current.get_text())
+            if text and len(text) < 200:  # Avoid huge blocks
+                text_before.append(text)
     
-    matches_found = 0
+    # Get text after table
+    current = table
+    for _ in range(elements_after):
+        current = current.find_next()
+        if current is None:
+            break
+        if hasattr(current, 'get_text'):
+            text = clean_text(current.get_text())
+            if text and len(text) < 200:
+                text_after.append(text)
     
-    for element in all_elements:
-        text = clean_text(element.get_text()).lower()
+    return ' '.join(reversed(text_before)), ' '.join(text_after)
+
+
+
+
+def is_compensation_table(table, text_before, text_after):
+    """Check if table is likely a director compensation table"""
+    # Normalize apostrophes in context text
+    combined_text = (text_before + ' ' + text_after).lower()
+    combined_text_normalized = re.sub(r"['`´]", "'", combined_text)
+    
+    # Check for compensation keywords in surrounding text
+    for keyword in compensation_keywords:
+        keyword_normalized = re.sub(r"[`´']", "'", keyword).lower()
+        if keyword_normalized in combined_text_normalized:
+            return True, keyword
+    
+    return False, None
+
+
+
+
+def has_numeric_columns(table):
+    """Check if table has numeric/dollar columns (typical of compensation tables)"""
+    rows = table.find_all('tr')
+    if len(rows) < 2:
+        return False
+    
+    # Check a few data rows
+    for row in rows[1:4]:
+        cells = row.find_all(['td', 'th'], recursive=False)
+        if len(cells) < 2:
+            continue
         
-        for keyword in compensation_keywords:
-            if keyword in text and len(text) < 200:
-                matches_found += 1
-                print(f"\n  Match #{matches_found}: Found '{keyword}' in <{element.name}> tag")
-                print(f"    Text: '{clean_text(element.get_text())[:80]}'")
-                
-                current = element
-                tables_checked = 0
-                for step in range(100):
-                    current = current.find_next()
-                    if current is None:
-                        break
-                    if current.name == 'table':
-                        tables_checked += 1
-                        print(f"    Found table #{tables_checked} after {step} steps")
-                        
-                        name_col_idx = has_name_column(current)
-                        
-                        if name_col_idx is not None:
-                            print(f"    ✓✓✓ Table has Name column at index {name_col_idx}!")
-                            return current, name_col_idx
-                        else:
-                            print(f"    Continuing search...")
-                            
-                            if tables_checked >= 5:
-                                print(f"    Checked {tables_checked} tables, moving to next keyword match")
-                                break
-                break
+        # Check if any cells contain dollar amounts or numbers
+        for cell in cells[1:]:  # Skip first column (usually names)
+            text = clean_text(cell.get_text())
+            if re.search(r'\$|[\d,]+\.\d{2}|[\d,]{4,}', text):
+                return True
     
-    print(f"\n  Total keyword matches found: {matches_found}")
-    return None, None
+    return False
+
+
+
 
 def extract_names_from_table(table, name_column_index):
+    """Extract names from the Name column of the table"""
     names = []
     
     title_keywords = [
@@ -127,7 +160,7 @@ def extract_names_from_table(table, name_column_index):
         'senior', 'junior', 'assistant', 'emeritus',
         'independent', 'non-employee', 'employee',
         'audit', 'compensation', 'governance', 'nominating',
-        'committee', 'retired', 'former', 'founder', 'current', 'and','all'
+        'committee', 'retired', 'former', 'founder', 'current', 'and', 'all'
     ]
     
     rows = table.find_all('tr')
@@ -135,16 +168,13 @@ def extract_names_from_table(table, name_column_index):
     if not rows:
         return names
     
-    print(f"\n  Extracting names from table:")
-    print(f"    Total rows: {len(rows)}")
-    print(f"    Name column index: {name_column_index}")
+    print(f"      Extracting names from table (Name column: {name_column_index})")
     
     for row_idx, row in enumerate(rows, start=1):
         cells = row.find_all(['td', 'th'], recursive=False)
         
         if len(cells) > name_column_index:
             name = clean_text(cells[name_column_index].get_text())
-            
             name_lower = name.lower()
             
             if (name and len(name) > 2 and 
@@ -159,38 +189,84 @@ def extract_names_from_table(table, name_column_index):
                 
                 if name and len(name) > 2:
                     name_lower = name.lower()
-                    
                     has_title_keyword = any(keyword in name_lower for keyword in title_keywords)
                     
                     if has_title_keyword:
                         earliest_pos = len(name)
-                        matched_keyword = None
                         
                         for keyword in title_keywords:
                             pos = name_lower.find(keyword)
                             if pos != -1 and pos < earliest_pos:
                                 earliest_pos = pos
-                                matched_keyword = keyword
                         
                         if earliest_pos > 0:
                             clean_name = name[:earliest_pos].strip()
                             clean_name = re.sub(r'[,\-—()\s]+$', '', clean_name).strip()
                             
                             if clean_name and len(clean_name) > 2 and not re.match(r'^[\d,\$\.\s\-—]+$', clean_name):
-                                print(f"    Row {row_idx}: CLEANED - '{name}' -> '{clean_name}'")
+                                print(f"        Row {row_idx}: CLEANED - '{name}' -> '{clean_name}'")
                                 names.append(clean_name)
-                            else:
-                                print(f"    Row {row_idx}: SKIPPED (invalid after cleaning) - {name}")
                         else:
-                            print(f"    Row {row_idx}: SKIPPED (title only) - {name}")
+                            print(f"        Row {row_idx}: SKIPPED (title only) - {name}")
                     else:
                         names.append(name)
-                        print(f"    Row {row_idx}: {name}")
+                        print(f"        Row {row_idx}: {name}")
     
     return names
 
+
+
+
+def find_compensation_table(soup):
+    """Find director compensation table by checking all tables"""
+    all_tables = soup.find_all('table')
+    
+    print(f"  Found {len(all_tables)} total tables in document")
+    print(f"  Checking each table for compensation context and structure...")
+    
+    for table_idx, table in enumerate(all_tables, start=1):
+        print(f"\n  Table #{table_idx}:")
+        
+        # Get surrounding text
+        text_before, text_after = get_text_around_table(table)
+        
+        # Check if it's a compensation table based on context
+        is_comp_table, matched_keyword = is_compensation_table(table, text_before, text_after)
+        
+        if is_comp_table:
+            print(f"    ✓ Found keyword '{matched_keyword}' in surrounding text")
+            
+            # Check if table has name column
+            name_col_idx = has_name_column(table)
+            
+            if name_col_idx is not None:
+                print(f"    ✓ Has name column at index {name_col_idx}")
+                
+                # Check if table has numeric columns (compensation data)
+                has_numbers = has_numeric_columns(table)
+                
+                if has_numbers:
+                    print(f"    ✓ Has numeric/dollar columns")
+                    print(f"    ✓✓✓ This appears to be the director compensation table!")
+                    return table, name_col_idx
+                else:
+                    print(f"    ✗ No numeric columns found, continuing search...")
+            else:
+                print(f"    ✗ No name column found, continuing search...")
+        else:
+            print(f"    ✗ No compensation keywords in surrounding text")
+    
+    print(f"\n  ✗ No suitable compensation table found")
+    return None, None
+
+
+
+
 input_csv = 'def14a_filings_catalog.csv'
-indices_to_process = [1847, 423, 1256, 89, 1673, 942, 1501, 267, 1834, 1092, 556, 1429, 703, 1965, 314, 1176, 817, 1612, 512, 1300]
+indices_to_process = [1847, 423, 1256, 89, 1673, 942, 1501, 267, 1834, 1092, 556, 1429, 703, 1965, 318, 1176, 847, 1612, 475, 1289]
+
+
+
 
 with open(input_csv, 'r', encoding='utf-8') as file:
     reader = csv.DictReader(file)
@@ -219,7 +295,7 @@ with open(input_csv, 'r', encoding='utf-8') as file:
         
         if doc_response.status_code == 200:
             soup = BeautifulSoup(doc_response.content, 'html.parser')
-            comp_table, name_col_idx = find_compensation_table(soup,filing_date)
+            comp_table, name_col_idx = find_compensation_table(soup)
             
             if comp_table and name_col_idx is not None:
                 director_names = extract_names_from_table(comp_table, name_col_idx)
@@ -232,9 +308,12 @@ with open(input_csv, 'r', encoding='utf-8') as file:
                         'Director Name': director_name
                     })
             else:
-                print(f"\n  ✗ Could not find director compensation table with name column")
+                print(f"\n  ✗ Could not find director compensation table")
         else:
             print(f"  Error fetching document: {doc_response.status_code}")
+
+
+
 
 if csv_data:
     filename = f"director_names_new_{datetime.now().strftime('%Y%m%d')}.csv"
