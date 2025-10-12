@@ -190,7 +190,7 @@ def extract_names_from_table(table, name_column_index):
     return names
 
 input_csv = 'def14a_filings_catalog.csv'
-indices_to_process = [1847, 423, 1256, 89, 1673, 942, 1501, 267, 1834, 1092, 556, 1429, 703, 1965, 314, 1176, 817, 1612, 512, 1300]
+indices_to_process = [1847, 423, 1256, 89, 1673, 942, 1501, 267, 1834, 1092, 556, 1429, 703, 1965, 318, 1176, 847, 1612, 475, 1289]
 
 with open(input_csv, 'r', encoding='utf-8') as file:
     reader = csv.DictReader(file)
